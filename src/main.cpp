@@ -28,6 +28,10 @@ void GetReadyResponse(unsigned char SPIcommand);
 void SetSSpin(bool pinState);
 void AddDelimiter (Stream &port);
 void PrintDataLabels(Stream &port);
+uint16_t _16bit_int(byte LSB, byte MSB);
+float _calc_float(uint8_t (&bytes)[4]);
+uint32_t _32bit_int(byte b0, byte b1, byte b2, byte b3);
+
 
 void setup() {
     // put your setup code here, to run once:
@@ -35,33 +39,25 @@ void setup() {
     esp_task_wdt_init(8, true); //Enable watchdog timer, countdown 8s (max)
     esp_task_wdt_add(NULL); //Add current thread to watchdog timer check list
 
-    //18,19,23,5,22,21,27
-    digitalWrite(18, HIGH);
-    digitalWrite(19, HIGH);
-    digitalWrite(23, HIGH);
-    digitalWrite(5, HIGH);
-    digitalWrite(22, HIGH);
-    digitalWrite(21, HIGH);
-    digitalWrite(27, HIGH);
-    pinMode(18, OUTPUT);
-    pinMode(19, OUTPUT);
-    pinMode(23, OUTPUT);
-    pinMode(5, OUTPUT);
-    pinMode(22, OUTPUT);
-    pinMode(21, OUTPUT);
-    pinMode(27, OUTPUT);
-
+    ssPin_OPC = 5;
+    SetSSpin(HIGH);
+    pinMode(ssPin_OPC, OUTPUT);
     delay(1000);
+
+    //Start serial port
     opSerial.begin(BaudRate);
 
     PrintFirmwareVer(opSerial);
 
     SPI.begin();
 
-    ssPin_OPC = 5;
     esp_task_wdt_reset();
     InitDevice();
     esp_task_wdt_reset();
+
+    PrintDataLabels(opSerial);
+    currentTime = millis();
+    cloopTime = currentTime;
 }
 
 void PrintFirmwareVer(Stream &port) {
@@ -81,7 +77,7 @@ void InitDevice(void) {
 }
 
 void loop() {
-    esp_task_wdt_reset(); //Reset watchdog timer
+/*     esp_task_wdt_reset(); //Reset watchdog timer
     currentTime = millis(); //millis count will reset on sketch restart
     if (currentTime >= cloopTime) {
         cloopTime += 60000; //60s loop
@@ -104,7 +100,25 @@ void loop() {
         }
         StopOPC();
         opSerial.println("Waiting until next cycle");
+    } */
+
+    esp_task_wdt_reset(); //Reset watchdog timer
+    ssPin_OPC = 5;
+    StartOPC();
+    esp_task_wdt_reset(); //Reset watchdog timer
+    delay(1000);
+    ReadOPChist();
+    esp_task_wdt_reset(); //Reset watchdog timer
+    while (1)
+    {
+        delay(1000);
+        ReadOPChist();
+        opSerial.print(millis());
+        PrintData(opSerial); //Print data to serial
+        esp_task_wdt_reset(); //Reset watchdog timer
+
     }
+    
 }
 
 //Get string (serialstr or infostr) from OPC
@@ -265,16 +279,16 @@ void ReadOPCconfig(Stream &port) {
 
     //PVP (Particle Validation Period) unsigned 8bit integer occupying 1 byte)
     port.print(F("PVP (Particle Validation Period),"));
-    port.println(SPI_in[21], DEC);
+    port.println((float)SPI_in[21]/48, 2);
 
     //PowerStatus (unsigned 8bit integer occupying 1 byte) Bit 0: controls laser and peripheral power, Bit 1 controls fan power
     port.print(F("PowerStatus,"));
-    port.println(SPI_in[22], BIN);
+    port.println(SPI_in[22], DEC);
 
     //MaxTOF (Maximum Time of Flight) (unsigned 16bit integer occupying 2 bytes)
     port.print(F("MaxTOF (Maximum Time of Flight),"));
     pUInt16 = (uint16_t *)&SPI_in[23];
-    port.println(*pUInt16, DEC);
+    port.println((float)*pUInt16/48, 2);
 
     //LaserDAC (Laser DAC) (unsigned 8bit integer occupying 1 byte)
     port.print(F("LaserDAC (Laser DAC),"));
@@ -355,19 +369,19 @@ void GetReadyResponse(unsigned char SPIcommand) {
     esp_task_wdt_reset();
 }
 
-unsigned int MODBUS_CalcCRC(unsigned char data[], unsigned char nbrOfBytes)
+uint16_t MODBUS_CalcCRC(unsigned char data[], unsigned char nbrOfBytes)
 {
   #define POLYNOMIAL_MODBUS 0xA001 //Generator polynomial for MODBUS crc
   #define InitCRCval_MODBUS 0xFFFF //Initial CRC value
 
   unsigned char _bit; // bit mask
-  unsigned int crc = InitCRCval_MODBUS; // initialise calculated checksum
+  uint16_t crc = InitCRCval_MODBUS; // initialise calculated checksum
   unsigned char byteCtr; // byte counter
 
   // calculates 16-Bit checksum with given polynomial
   for(byteCtr = 0; byteCtr < nbrOfBytes; byteCtr++)
   {
-    crc ^= (unsigned int)data[byteCtr];
+    crc ^= (uint16_t)data[byteCtr];
     for(_bit = 0; _bit < 8; _bit++)
     {
       if (crc & 1) //if bit0 of crc is 1
@@ -383,14 +397,14 @@ unsigned int MODBUS_CalcCRC(unsigned char data[], unsigned char nbrOfBytes)
 }
 
 //Convert SHT31 ST output to Temperature (C)
-float ConvSTtoTemperature (unsigned int ST)
+float ConvSTtoTemperature (uint16_t ST)
 {
   return -45 + 175*(float)ST/65535;
 }
 
 
 //Convert SHT31 SRH output to Relative Humidity (%)
-float ConvSRHtoRelativeHumidity (unsigned int SRH)
+float ConvSRHtoRelativeHumidity (uint16_t SRH)
 {
   return 100*(float)SRH/65535;
 }
@@ -411,7 +425,8 @@ void PrintData (Stream &port) {
     //MToF 8bit integer occupying 1 byte each representing the avarage time that particles sized in the stated bin took to cross the laser beam
     for (i=32; i<36; ++i) {
         AddDelimiter(port);
-        Afloat = (float)SPI_in[i]/3; //convert to microseconds
+        Afloat = (float)SPI_in[i];
+        Afloat /= 3; //convert to microseconds
         port.print(Afloat, 2);
     }
 
@@ -455,6 +470,15 @@ void PrintData (Stream &port) {
     AddDelimiter(port);
     pFloat = (float *)&SPI_in[58];
     port.print(*pFloat, 3);
+
+/*     //PMs
+    float PMs[3];
+    for (i=50; i<62; i+=4) {
+        uint8_t bytes[4] = {SPI_in[i], SPI_in[i+1], SPI_in[i+2], SPI_in[i+3]};
+        PMs[(i-50)/4] = _calc_float(bytes);
+        AddDelimiter(port);
+        port.print(PMs[(i-50)/4], 3);
+    } */
 
     //Checksum (unsigned 16bit integer occupying 2 bytes)
     AddDelimiter(port);
@@ -505,4 +529,41 @@ void AddDelimiter (Stream &port) {
 
 void SetSSpin (bool pinState) {
     digitalWrite(ssPin_OPC, pinState);
+}
+
+
+//Combine two bytes into a 16bit unsigned integer
+uint16_t _16bit_int(byte LSB, byte MSB) {
+    return ((MSB << 8) | LSB);
+}
+
+//Return an IEEE754 float from four bytes
+/* float _calc_float(byte b0, byte b1, byte b2, byte b3) {
+    union {
+        byte b[4];
+        float fval;
+    } u;
+    u.b[0] = b0;
+    u.b[1] = b1;
+    u.b[2] = b2;
+    u.b[3] = b3;
+    return u.fval;
+} */
+/*!!!!!!!!!!!!!!!!!!!!!!!
+Dont use this! Type punning using union is not allowed see: See §C.183 of the C++ Core Guidelines
+https://github.com/isocpp/CppCoreGuidelines/blob/master/CppCoreGuidelines.md#Ru-pun
+(Marcel Oliveira Brito)
+!!!!!!!!!!!!!!!!!!!!!!!!!*/
+
+//Better way is using memcpy
+float _calc_float(uint8_t (&bytes)[4]) {
+    static_assert(sizeof(float) == 4, "float size expected to be 4 bytes");
+    float result;
+    memcpy(&result, bytes, 4);
+    return result;
+}
+
+//Return a 32bit unsigned integer from four bytes
+uint32_t _32bit_int(byte b0, byte b1, byte b2, byte b3) {
+    return ((b3 << 24) | (b2 << 16) | (b1 << 8) | b0);
 }
