@@ -2,7 +2,7 @@
 	Functions to operate the Alphasense OPC-R2 Particle counter..
 	
     based on the example code from Alphasense for the OPC-N3
-    Marcel Oliveira May 2023
+    Marcel Oliveira, May 2023
 */
 #pragma once
 
