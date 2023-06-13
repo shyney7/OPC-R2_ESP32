@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include <esp_task_wdt.h>    //Watchdog timer
+#include "data.h"            //data struct
 #include "opcr2.h"           //OPC-R2
 #include <Adafruit_Sensor.h> //BM280
 #include <Adafruit_BME280.h> //BM280
@@ -11,8 +12,9 @@
 //Adafruit_BME280 bme I2C ************
 Adafruit_BME280 bme;
 #define SEALEVELPRESSURE_HPA (1013.25)
-//print BME280 values prototype
+//print & insert BME280 values prototype
 void printValues(void);
+void insertBMEData(sensorData &dataObj);
 //END Adafruit_BME280 bme I2C ************
 
 //NRF24L01 ************
@@ -25,8 +27,9 @@ struct payload_t {
     unsigned long ms;
     unsigned long counter;
 };
+sensorData data;
 //prototype
-void sendData(void);
+void sendData(sensorData &dataObj);
 //END NRF24L01 ************
 
 
@@ -70,6 +73,7 @@ void setup() {
         opSerial.print("        ID of 0x61 represents a BME 680.\n");
         while (1) delay(10);
     }
+    esp_task_wdt_reset();
     //END bme280
 
     //NRF24L01
@@ -85,6 +89,7 @@ void setup() {
             do {
                 //mesh.renewAddress() will return MESH_DEFAULT_ADDRESS on failure to connect
                 opSerial.println(F("Could not connect to network. \nConnecting to the mesh..."));
+                esp_task_wdt_reset();
             }while (mesh.renewAddress() == MESH_DEFAULT_ADDRESS);
         }
         else {
@@ -138,8 +143,12 @@ void loop() {
         PrintData(opSerial); //Print data to serial
         esp_task_wdt_reset(); //Reset watchdog timer
         printValues(); //bme280
+        //insertData
         esp_task_wdt_reset();
-        sendData(); //NRF24
+        insertHist(data); //OPC
+        insertBMEData(data); //BME280
+        esp_task_wdt_reset();
+        sendData(data); //NRF24
         esp_task_wdt_reset();
     }
     
@@ -165,16 +174,22 @@ void printValues(void) {
 
     opSerial.println();
 }
+void insertBMEData(sensorData &dataObj) {
+    dataObj.bmeTemp = bme.readTemperature();
+    dataObj.bmePress = bme.readPressure() / 100.0F;
+    dataObj.bmeAlt = bme.readAltitude(SEALEVELPRESSURE_HPA);
+    dataObj.bmeHum = bme.readHumidity();
+}
 
 //send RF24 Data
-void sendData(void) {
+void sendData(sensorData &dataObj) {
     mesh.update();
 
     //Send to the master node every second
     if (millis() - displayTimer >= 1000) {
         displayTimer = millis();
         //Send an 'M' type message containing the current millis()
-        if (!mesh.write(&displayTimer, 'M', sizeof(displayTimer))) {
+        if (!mesh.write(&dataObj, 'M', sizeof(dataObj))) {
             //if a write fails, check connectivity to the mesh network
             if (!mesh.checkConnection()) {
                 //refresh the network address

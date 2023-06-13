@@ -9,6 +9,7 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include <esp_task_wdt.h>
+#include "data.h"
 
 // Defines
 #define FirmwareVer "OPC-R2(ESP32)_Ver.0.8"
@@ -485,4 +486,60 @@ void PrintDataLabels (Stream &port) {
     port.print(F(",Checksum"));
     port.println();
     port.flush();
+}
+
+//insert Histogram data into struct
+void insertHist(sensorData &dataObj) {
+    uint8_t floatBytes[4];
+    dataObj.binsSum = 0;
+    //insert bins
+    for (uint8_t i=0; i<16; ++i) {
+        dataObj.bins[i] = _16bit_int(SPI_in[i*2], SPI_in[i*2+1]);
+        dataObj.binsSum += dataObj.bins[i];
+    }
+    //insert MToF
+    dataObj.bin1MToF = int(SPI_in[32])/3.0;
+    dataObj.bin3MToF = int(SPI_in[33])/3.0;
+    dataObj.bin5MToF = int(SPI_in[34])/3.0;
+    dataObj.bin7MToF = int(SPI_in[35])/3.0;
+    //insert SFR
+    for (uint8_t i=0; i<4; ++i) {
+        floatBytes[i] = SPI_in[i+36];
+    }
+    dataObj.sampleFlowRate = _calc_float(floatBytes);
+    //insert Temp
+    dataObj.temp = ConvSTtoTemperature(_16bit_int(SPI_in[40], SPI_in[41]));
+    //insert RH
+    dataObj.hum = ConvSRHtoRelativeHumidity(_16bit_int(SPI_in[42], SPI_in[43]));
+    //insert Sampling Period
+    for (uint8_t i=0; i<4; ++i) {
+        floatBytes[i] = SPI_in[i+44];
+    }
+    dataObj.sPeriod = _calc_float(floatBytes);
+    //insert Reject count Glitch
+    dataObj.rcGlitch = byte(SPI_in[48]);
+    //insert Reject count Long
+    dataObj.rcLong = byte(SPI_in[49]);
+    //insert PMs
+    for (uint8_t i=0; i<12; ++i) {
+        floatBytes[i%4] = SPI_in[i+50];
+        if (i%4 == 3) {
+            if (i<4)
+                dataObj.pm1 = _calc_float(floatBytes);
+            else if (i<8)
+                dataObj.pm25 = _calc_float(floatBytes);
+            else
+                dataObj.pm10 = _calc_float(floatBytes);
+        }
+    }
+    //insert Checksum
+    dataObj.checksum = _16bit_int(SPI_in[62], SPI_in[63]);
+    //check Checksum
+    if (dataObj.checksum == MODBUS_CalcCRC(SPI_in, 62)) {
+        dataObj.checksumOK = true;
+    }
+    else {
+        dataObj.checksumOK = false;
+    }
+
 }
